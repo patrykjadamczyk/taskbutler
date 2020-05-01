@@ -17,11 +17,50 @@ import os
 import shutil
 import re
 
+import aftership
+
 from .config import staticConfig, getConfigPaths
 
 logger = logging.getLogger('todoist')
 loggerdb = logging.getLogger('dropbox')
 loggerdg = logging.getLogger('github')
+
+
+def parcelGetInfo(apikey, trackingcode):
+    """
+    Returns full parcel info. Creates tracking if needed
+    :param apikey:
+    :param trackingcode:
+    :return: parcel object
+    """
+    aftership.api_key = apikey
+    parcel_id = ''
+    tracking = {'tracking_number': trackingcode}
+
+    # create
+    try:
+        result = aftership.tracking.create_tracking(tracking=tracking, timeout=10)
+        tid = result['tracking']['id']
+    except aftership.exception.BadRequest:
+        # tracking already exists
+        trackings = aftership.tracking.list_trackings()
+        # find parcel
+        for parcel in trackings['trackings']:
+            if trackingcode in parcel['title']:
+                logger.debug("found parcel: {}".format(parcel['id']))
+                parcel_id = parcel['id']
+                break
+    except Exception as err:
+        logger.error("Error - can't create or find. \nOriginal Error: {}".format(err))
+
+    # get Info
+    try:
+        result = aftership.tracking.get_tracking(tracking_id=parcel_id)['tracking']
+        # result = aftership.tracking.get_tracking(tracking_id=trackingcode, fields=['title', 'checkpoints'])
+    except Exception as err:
+        logger.error("Error - can't get info. \nOriginal Error: {}".format(err))
+
+    return result
 
 
 def localizePrice(value, currency) -> str:
@@ -449,6 +488,11 @@ def main():
         github_sync_repo_name = config.get('github', 'GithubSyncRepoName')
         github_username = config.get('github', 'GithubUsername')
 
+        parcel_api_key = config.get('parcel', 'apikey')
+        parcel_label = config.get('parcel', 'labelname')
+        parcel_seperator = config.get('parcel', 'seperator')
+        parcel_citycode = config.get('parcel', 'citycode')
+
     except FileNotFoundError as error:
         logger.error("Config file not found! Create config.ini first. \nOriginal Error: {}".format(error))
         raise SystemExit(1)
@@ -508,6 +552,38 @@ def main():
         # api.commit()
 
         # List projects
+
+    if parcel_label:
+        # TODO: update Readme
+        parcel_label = getlabelid(parcel_label, api)
+
+        for task in api.state['items']:
+            if not isinstance(task['id'], str) and task['labels'] and not task['is_deleted'] and not task['in_history'] and not getattr(task, 'is_archived', 0):
+                for label in task['labels']:
+                    if label == parcel_label:
+                        notes = api.notes.all()
+                        for note in notes:
+                            if note['item_id'] == task['id']:
+                                logger.debug("Parcel note : {}".format(note['content']))
+
+                        logger.debug("Parcel title old: {}".format(task['content']))
+                        parcel_info = parcelGetInfo(parcel_api_key, note['content'])
+                        parcel_url = parcel_info['courier_tracking_link']
+
+                        # TODO: get parcel status
+                        # TODO: add parcel status to task title
+                        # TODO: change parcel emojo in sync with status (briefkasten emojos gibts in 3 zuständen)
+
+                        new_title = addurltotask(task['content'], parcel_url, parcel_seperator)
+                        logger.debug("Parcel title new: {}".format(new_title))
+
+                        # TODO: don't update is no change
+                        task.update(content=new_title)
+                        api.commit()
+
+        # TODO: delete Parcel if arrived. Use result['tracking']['shipment_pickup_date'] +7 days to delete
+
+    exit(1)
 
     if grocery_label:
         label_grocery_id = getlabelid(grocery_label, api)
