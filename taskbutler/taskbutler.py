@@ -17,6 +17,9 @@ import os
 import shutil
 import re
 
+import datetime
+from dateutil import tz as tz
+
 import aftership
 
 from .config import staticConfig, getConfigPaths
@@ -34,28 +37,41 @@ def parcelGetInfo(apikey, trackingcode):
     :return: parcel object
     """
     aftership.api_key = apikey
-    parcel_id = ''
     tracking = {'tracking_number': trackingcode}
+    tid = False
+    result = False
 
     # create
     try:
         result = aftership.tracking.create_tracking(tracking=tracking, timeout=10)
+        logger.debug("Parcel created at aftership: {}".format(result['tracking']['id']))
         tid = result['tracking']['id']
     except aftership.exception.BadRequest:
         # tracking already exists
-        trackings = aftership.tracking.list_trackings()
-        # find parcel
-        for parcel in trackings['trackings']:
-            if trackingcode in parcel['title']:
-                logger.debug("found parcel: {}".format(parcel['id']))
-                parcel_id = parcel['id']
-                break
+        logger.debug("Parcel already exists at aftership.")
+        pass
     except Exception as err:
         logger.error("Error - can't create or find. \nOriginal Error: {}".format(err))
 
+    if not tid:
+        logger.debug("Searching for tracking id:".format(trackingcode))
+        trackings = aftership.tracking.list_trackings()
+
+        # find parcel
+        for parcel in trackings['trackings']:
+            if trackingcode == parcel['tracking_number']:
+                logger.debug("found parcel info: {}".format(parcel))
+                tid = parcel['id']
+                break
+            else:
+                pass
+
+    if tid is False:
+        logger.error("Parcel tracking not found nor created: {}".format(tracking))
+
     # get Info
     try:
-        result = aftership.tracking.get_tracking(tracking_id=parcel_id)['tracking']
+        result = aftership.tracking.get_tracking(tracking_id=tid)['tracking']
         # result = aftership.tracking.get_tracking(tracking_id=trackingcode, fields=['title', 'checkpoints'])
     except Exception as err:
         logger.error("Error - can't get info. \nOriginal Error: {}".format(err))
@@ -537,6 +553,9 @@ def main():
     try:
         api = TodoistAPI(todoist_api_key)
         api.sync()
+        # get user timezonne
+        timezone = tz.gettz(api.state['user']['tz_info']['timezone'])
+        logger.debug("Users Timezone:: {}".format(timezone))
         if not api.state['items']:
             raise ValueError('Sync error. State empty.')
     except ValueError as error:
@@ -561,25 +580,59 @@ def main():
             if not isinstance(task['id'], str) and task['labels'] and not task['is_deleted'] and not task['in_history'] and not getattr(task, 'is_archived', 0):
                 for label in task['labels']:
                     if label == parcel_label:
+                        logger.debug("Found Parcel to track: {}".format(task['content']))
+
+                        # Search Code in Notes
                         notes = api.notes.all()
                         for note in notes:
                             if note['item_id'] == task['id']:
                                 logger.debug("Parcel note : {}".format(note['content']))
+                                break
 
-                        logger.debug("Parcel title old: {}".format(task['content']))
+                        # Get info
+                        # TODO: get parcel status
                         parcel_info = parcelGetInfo(parcel_api_key, note['content'])
+
+                        # Get expected delivery date
+                        parcel_delivery_expected = parcel_info['expected_delivery']
+                        # 2020-05-06T00:00:00+02:00
+                        if parcel_delivery_expected:
+                            logger.debug("Convert delivery Date.")
+
+                            date_time_obj = datetime.datetime.strptime(parcel_delivery_expected, '%Y-%m-%dT%H:%M:%S%z').astimezone(tz=timezone)
+
+                            # add offset if time is 00
+                            if date_time_obj.hour == 0:
+                                offset = '12 hour'
+                                offset = datetime.datetime.strptime(offset, '%H hour')
+                                date_time_obj = datetime.datetime.strptime(parcel_delivery_expected, '%Y-%m-%dT%H:%M:%S%z').astimezone(tz=timezone) + datetime.timedelta(
+                                    hours=offset.hour)
+
+                            date_converted = date_time_obj.strftime('%Y-%m-%dT%H:%M:%S')
+                            due = {
+                                "date": date_converted,
+                            }
+                            task.update(due=due)
+                            api.commit()
+                        else:
+                            logger.debug("No expected delivery Date found yet.")
+
                         parcel_url = parcel_info['courier_tracking_link']
 
-                        # TODO: get parcel status
                         # TODO: add parcel status to task title
                         # TODO: change parcel emojo in sync with status (briefkasten emojos gibts in 3 zuständen)
 
                         new_title = addurltotask(task['content'], parcel_url, parcel_seperator)
-                        logger.debug("Parcel title new: {}".format(new_title))
 
-                        # TODO: don't update is no change
-                        task.update(content=new_title)
-                        api.commit()
+                        if parcel_url not in task['content']:
+                            logger.debug("Parcel title changed: {}".format(new_title))
+                            logger.debug("Parcel title old: {}".format(task['content']))
+                            logger.debug("Parcel title new: {}".format(new_title))
+                            # TODO: don't update is no change
+                            task.update(content=new_title)
+                            api.commit()
+                        else:
+                            logger.debug("Skip update - no change.")
 
         # TODO: delete Parcel if arrived. Use result['tracking']['shipment_pickup_date'] +7 days to delete
 
