@@ -29,11 +29,23 @@ loggerdb = logging.getLogger('dropbox')
 loggerdg = logging.getLogger('github')
 
 
-def getNodeContent(note_id, api: object):
+def getNoteContent(note_id, api: object):
+    """
+    Returns Content of NoteID
+    :param note_id: todoist note ID
+    :param api: todoist api
+    :return: Content/Text of Note
+    """
     return api.notes.get(note_id)['note']['content']
 
 
 def getNoteIDs(task_id, api: object):
+    """"
+    Find all Notes of TaskID. Returns List of IDs
+    :param task_id: todoist task id
+    :param api: todoist api
+    :return: List of IDs or False in List[0] if not found
+    """
     # Search Code in Notes
     notes = api.notes.all()
     note_ids = []
@@ -130,7 +142,7 @@ def parcelGetInfo(apikey, trackingcode):
         # result = aftership.tracking.get_tracking(tracking_id=trackingcode, fields=['title', 'checkpoints'])
     except Exception as err:
         logger.error("Error - can't get info. \nOriginal Error: {}".format(err))
-
+        result = False
     return result
 
 
@@ -627,7 +639,7 @@ def main():
 
         # List projects
 
-    if parcel_label:
+    if parcel_label and parcel_api_key:
         # TODO: update Readme
         parcel_label = getlabelid(parcel_label, api)
 
@@ -637,17 +649,16 @@ def main():
                     if label == parcel_label:
                         # delete parcels marked as "done"
                         if task['in_history'] or task['is_deleted'] or getattr(task, 'is_archived', 0):
-                            # TODO delete comment
+                            # delete comment/trackingcode and tracking@aftership
                             note_to_delete = getNoteIDs(task['id'], api).__getitem__(0)
                             if note_to_delete is False:
                                 logger.debug("Parcel already deleted or no Code: {}".format(task['content']))
                                 break
                             logger.info("Found Parcel to delete: {}".format(task['content']))
                             api.notes.delete(note_to_delete)
-                            tracking_to_delete = getNodeContent(note_to_delete, api)
+                            tracking_to_delete = getNoteContent(note_to_delete, api)
                             if parcelDelete(parcel_api_key, tracking_to_delete):
                                 api.commit()
-
                             break
 
                         logger.debug("Found Parcel to track: {}".format(task['content']))
@@ -656,22 +667,23 @@ def main():
                         if task_note_tracking_code is False:
                             logger.info("No Code found in Comment for: {}".format(task['content']))
                             break
-                        task_tracking_code = getNodeContent(task_note_tracking_code, api)
+                        task_tracking_code = getNoteContent(task_note_tracking_code, api)
                         if task_note_tracking_code is False:
                             logger.info("No Aftership parcel created for: {}".format(task['content']))
                             break
                         # Get info
-                        # TODO: get parcel status
                         parcel_info = parcelGetInfo(parcel_api_key, task_tracking_code)
 
-                        # Get expected delivery date
-                        parcel_delivery_expected = parcel_info['expected_delivery']
-                        # 2020-05-06T00:00:00+02:00
+                        # Get and set expected delivery date
+                        try:
+                            parcel_delivery_expected = parcel_info['expected_delivery']
+                        except:
+                            parcel_delivery_expected = False
+                        # format: 2020-05-06T00:00:00+02:00
                         if parcel_delivery_expected:
                             logger.debug("Convert delivery Date.")
 
                             date_time_obj = datetime.datetime.strptime(parcel_delivery_expected, '%Y-%m-%dT%H:%M:%S%z').astimezone(tz=timezone)
-
                             # add offset if time is 00
                             if date_time_obj.hour == 0:
                                 offset = '12 hour'
@@ -683,30 +695,28 @@ def main():
                             due = {
                                 "date": date_converted,
                             }
+                            logger.info("Update Due date according to delivery date.")
                             task.update(due=due)
                             api.commit()
                         else:
                             logger.debug("No expected delivery Date found yet.")
 
-                        parcel_url = parcel_info['courier_tracking_link']
-
                         # TODO: add parcel status to task title
                         # TODO: change parcel emojo in sync with status (briefkasten emojos gibts in 3 zuständen)
 
-                        new_title = addurltotask(task['content'], parcel_url, parcel_seperator)
+                        try:
+                            parcel_url = parcel_info['courier_tracking_link']
+                            new_title = addurltotask(task['content'], parcel_url, parcel_seperator)
+                        except:
+                            parcel_url = False
 
-                        if parcel_url not in task['content']:
-                            logger.debug("Parcel title changed: {}".format(new_title))
-                            logger.debug("Parcel title old: {}".format(task['content']))
-                            logger.debug("Parcel title new: {}".format(new_title))
-                            # TODO: don't update is no change
-                            task.update(content=new_title)
-                            api.commit()
+                        if parcel_url and parcel_url not in task['content']:
+                            if not task['content'] == new_title:
+                                logger.info("Parcel title changed. Update: {}".format(new_title))
+                                task.update(content=new_title)
+                                api.commit()
                         else:
                             logger.debug("Skip update - no change.")
-
-        # TODO: delete Parcel if arrived. Use result['tracking']['shipment_pickup_date'] +7 days to delete
-
     exit(1)
 
     if grocery_label:

@@ -20,7 +20,6 @@ grocery_currency = €
 [parcel]
 apikey =
 label_parcel = parcel
-citycode =
 
 [dropbox]
 apikey =
