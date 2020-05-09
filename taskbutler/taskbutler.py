@@ -29,6 +29,61 @@ loggerdb = logging.getLogger('dropbox')
 loggerdg = logging.getLogger('github')
 
 
+def getNodeContent(note_id, api: object):
+    return api.notes.get(note_id)['note']['content']
+
+
+def getNoteIDs(task_id, api: object):
+    # Search Code in Notes
+    notes = api.notes.all()
+    note_ids = []
+    for note in notes:
+        if note['item_id'] == task_id:
+            logger.debug("Found note : {}".format(note['content']))
+            note_ids.append(note['id'])
+
+    if len(note_ids) == 0:
+        note_ids.append(False)
+
+    return note_ids
+
+
+def parcelDelete(apikey, trackingcode):
+    """
+    Deletes tracking at aftership
+    :param apikey:
+    :param trackingcode:
+    :return: true/false
+    """
+    aftership.api_key = apikey
+    tracking = {'tracking_number': trackingcode}
+    tid = False
+
+    logger.debug("Searching for tracking id: {}".format(trackingcode))
+    trackings = aftership.tracking.list_trackings()
+
+    # find parcel
+    for parcel in trackings['trackings']:
+        if trackingcode == parcel['tracking_number']:
+            logger.debug("found parcel info: {}".format(parcel))
+            tid = parcel['id']
+            break
+        else:
+            pass
+
+    if tid is False:
+        logger.error("Parcel tracking not found nor created: {}".format(tracking))
+        return False
+    # delete
+    try:
+        aftership.tracking.delete_tracking(tracking_id=tid)
+        logger.info("Parcel deleted: {}".format(tracking))
+        return True
+    except Exception as err:
+        logger.error("Error - can't delete. \nOriginal Error: {}".format(err))
+        return False
+
+
 def parcelGetInfo(apikey, trackingcode):
     """
     Returns full parcel info. Creates tracking if needed
@@ -54,7 +109,7 @@ def parcelGetInfo(apikey, trackingcode):
         logger.error("Error - can't create or find. \nOriginal Error: {}".format(err))
 
     if not tid:
-        logger.debug("Searching for tracking id:".format(trackingcode))
+        logger.debug("Searching for tracking id: {}".format(trackingcode))
         trackings = aftership.tracking.list_trackings()
 
         # find parcel
@@ -577,21 +632,37 @@ def main():
         parcel_label = getlabelid(parcel_label, api)
 
         for task in api.state['items']:
-            if not isinstance(task['id'], str) and task['labels'] and not task['is_deleted'] and not task['in_history'] and not getattr(task, 'is_archived', 0):
+            if not isinstance(task['id'], str) and task['labels']:
                 for label in task['labels']:
                     if label == parcel_label:
+                        # delete parcels marked as "done"
+                        if task['in_history'] or task['is_deleted'] or getattr(task, 'is_archived', 0):
+                            # TODO delete comment
+                            note_to_delete = getNoteIDs(task['id'], api).__getitem__(0)
+                            if note_to_delete is False:
+                                logger.debug("Parcel already deleted or no Code: {}".format(task['content']))
+                                break
+                            logger.info("Found Parcel to delete: {}".format(task['content']))
+                            api.notes.delete(note_to_delete)
+                            tracking_to_delete = getNodeContent(note_to_delete, api)
+                            if parcelDelete(parcel_api_key, tracking_to_delete):
+                                api.commit()
+
+                            break
+
                         logger.debug("Found Parcel to track: {}".format(task['content']))
 
-                        # Search Code in Notes
-                        notes = api.notes.all()
-                        for note in notes:
-                            if note['item_id'] == task['id']:
-                                logger.debug("Parcel note : {}".format(note['content']))
-                                break
-
+                        task_note_tracking_code = getNoteIDs(task['id'], api).__getitem__(0)
+                        if task_note_tracking_code is False:
+                            logger.info("No Code found in Comment for: {}".format(task['content']))
+                            break
+                        task_tracking_code = getNodeContent(task_note_tracking_code, api)
+                        if task_note_tracking_code is False:
+                            logger.info("No Aftership parcel created for: {}".format(task['content']))
+                            break
                         # Get info
                         # TODO: get parcel status
-                        parcel_info = parcelGetInfo(parcel_api_key, note['content'])
+                        parcel_info = parcelGetInfo(parcel_api_key, task_tracking_code)
 
                         # Get expected delivery date
                         parcel_delivery_expected = parcel_info['expected_delivery']
