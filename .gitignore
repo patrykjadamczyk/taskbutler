@@ -279,3 +279,5 @@ taskbutler.egg-info
 *.vagrant
 
 docs/_build
+
+pythonenv*/
