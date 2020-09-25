@@ -86,3 +86,6 @@ dist: clean ## builds source and wheel package
 
 install: clean ## install the package to the active Python's site-packages
 	python setup.py install
+
+build-docker-package:
+	docker build --no-cache . --tag docker.pkg.github.com/patrykjadamczyk/taskbutler/taskbutler:latest && docker push docker.pkg.github.com/patrykjadamczyk/taskbutler/taskbutler:latest
