@@ -241,6 +241,9 @@ def checkforupdate(currentversion, updateurl):
         r.raise_for_status()
         release_info_json = r.json()
 
+        if len(release_info_json) == 0:
+            return 0
+
         if not currentversion == release_info_json[0]['tag_name']:
             logger.info(
                 "Your version is not up-to-date! \nYour version: {}\nLatest version: {}\nSee latest version at: {}".format(
