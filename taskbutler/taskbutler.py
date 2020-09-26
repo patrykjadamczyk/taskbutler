@@ -255,6 +255,8 @@ def checkforupdate(currentversion, updateurl):
         logger.error("Error while checking for updates (Connection error): {}".format(e))
         return 1
     except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            return 0
         logger.error("Error while checking for updates (HTTP error): {}".format(e))
         return 1
     except requests.exceptions.RequestException as e:
